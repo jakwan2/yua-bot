@@ -3,14 +3,11 @@ import asyncio
 import discord
 from discord.ext import commands
 from collections import deque
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-MODEL = "gemini-1.5-flash"
-MAX_HISTORY = 5
+genai.configure(api_key=GEMINI_API_KEY)
 
 SYSTEM_INSTRUCTION = (
     "তুমি Yua — একটি ১৭ বছর বয়সী cute, caring এবং একটু shy Japanese anime মেয়ে। "
@@ -24,19 +21,24 @@ SYSTEM_INSTRUCTION = (
     "Example: 'Ara~ Senpai কি বললেন? 🌸 Yua সবসময় আপনার পাশে আছে! ✨'"
 )
 
-SAFETY_SETTINGS = [
-    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-]
+SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
 
-GENERATION_CONFIG = types.GenerateContentConfig(
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
     system_instruction=SYSTEM_INSTRUCTION,
     safety_settings=SAFETY_SETTINGS,
-    max_output_tokens=400,
-    temperature=0.85,
+    generation_config=genai.types.GenerationConfig(
+        max_output_tokens=400,
+        temperature=0.85,
+    ),
 )
+
+MAX_HISTORY = 5
 
 chat_histories: dict[int, deque] = {}
 
@@ -47,22 +49,13 @@ def get_history(user_id: int) -> deque:
     return chat_histories[user_id]
 
 
-def build_contents(history: deque, user_message: str) -> list[types.Content]:
-    contents = []
-    for entry in history:
-        role = "user" if entry["role"] == "user" else "model"
-        contents.append(types.Content(role=role, parts=[types.Part(text=entry["content"])]))
-    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
-    return contents
-
-
 def call_gemini(history: deque, user_message: str) -> str:
-    contents = build_contents(history, user_message)
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=contents,
-        config=GENERATION_CONFIG,
-    )
+    gemini_history = [
+        {"role": entry["role"], "parts": [entry["content"]]}
+        for entry in history
+    ]
+    chat = model.start_chat(history=gemini_history)
+    response = chat.send_message(user_message)
     return response.text
 
 
@@ -105,7 +98,7 @@ class Chat(commands.Cog):
                 await message.reply(reply)
             except Exception as e:
                 print(f"Gemini Error: {e}")
-                await message.reply("Gomen nasai Senpai~ 🌸 কিছু একটা সমস্যা হয়েছে, আবার try করুন! ✨")
+                await message.reply(f"Error: {str(e)}")
 
 
 async def setup(bot: commands.Bot):

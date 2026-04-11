@@ -14,6 +14,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"API Key Loaded: {bool(os.getenv('GEMINI_API_KEY'))}")
     print("Yua is online! ✨")
 
 async def main():
