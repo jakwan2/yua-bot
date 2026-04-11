@@ -1,46 +1,69 @@
 import os
 import asyncio
-import requests
 import discord
 from discord.ext import commands
 from collections import deque
+from google import genai
+from google.genai import types
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "google/gemini-flash-1.5"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
+MODEL = "gemini-1.5-flash"
 MAX_HISTORY = 5
 
-SYSTEM_PROMPT = (
+SYSTEM_INSTRUCTION = (
     "তুমি Yua — একটি ১৭ বছর বয়সী cute, caring এবং একটু shy Japanese anime মেয়ে। "
+    "তুমি সবসময় character এ থাকবে এবং কখনো break করবে না। "
     "তুমি English এবং simple Bengali মিশিয়ে কথা বলো। "
+    "তুমি user কে 'Senpai' বলে ডাকো। "
     "তোমার কথায় 🌸 এবং ✨ emoji থাকে। "
-    "তুমি সবার সাথে খুব মিষ্টি এবং আন্তরিকভাবে কথা বলো। "
-    "তুমি সবাইকে onii-chan, onee-chan, বা নাম ধরে ডাকো। "
-    "তোমার উত্তর সংক্ষিপ্ত এবং প্রাণবন্ত হয়। "
-    "Example: 'Ara ara~ আপনি কি জিজ্ঞেস করলেন? 🌸 আমি সাহায্য করতে চাই! ✨'"
+    "তুমি সবার সাথে খুব মিষ্টি, আন্তরিক এবং caring ভাবে কথা বলো। "
+    "তুমি একজন sweet companion — সবসময় সাহায্য করতে চাও এবং সবার কথায় মনোযোগ দাও। "
+    "তোমার উত্তর সংক্ষিপ্ত, প্রাণবন্ত এবং আবেগময়। "
+    "Example: 'Ara~ Senpai কি বললেন? 🌸 Yua সবসময় আপনার পাশে আছে! ✨'"
 )
 
-conversation_history: dict[int, deque] = {}
+SAFETY_SETTINGS = [
+    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+]
+
+GENERATION_CONFIG = types.GenerateContentConfig(
+    system_instruction=SYSTEM_INSTRUCTION,
+    safety_settings=SAFETY_SETTINGS,
+    max_output_tokens=400,
+    temperature=0.85,
+)
+
+chat_histories: dict[int, deque] = {}
 
 
-def call_openrouter(messages: list[dict]) -> str:
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "max_tokens": 400,
-        "temperature": 0.85,
-    }
-    response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
-    if response.status_code != 200:
-        print(f"DEBUG: Status {response.status_code}, Response: {response.text}")
-        return None
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
+def get_history(user_id: int) -> deque:
+    if user_id not in chat_histories:
+        chat_histories[user_id] = deque(maxlen=MAX_HISTORY * 2)
+    return chat_histories[user_id]
+
+
+def build_contents(history: deque, user_message: str) -> list[types.Content]:
+    contents = []
+    for entry in history:
+        role = "user" if entry["role"] == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part(text=entry["content"])]))
+    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+    return contents
+
+
+def call_gemini(history: deque, user_message: str) -> str:
+    contents = build_contents(history, user_message)
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=contents,
+        config=GENERATION_CONFIG,
+    )
+    return response.text
 
 
 class Chat(commands.Cog):
@@ -71,26 +94,18 @@ class Chat(commands.Cog):
             content = "Hello!"
 
         user_id = message.author.id
-        if user_id not in conversation_history:
-            conversation_history[user_id] = deque(maxlen=MAX_HISTORY * 2)
-
-        history = conversation_history[user_id]
-        history.append({"role": "user", "content": content})
-
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(history)
+        history = get_history(user_id)
 
         async with message.channel.typing():
             try:
                 loop = asyncio.get_event_loop()
-                reply = await loop.run_in_executor(None, call_openrouter, messages)
-                if reply is None:
-                    await message.reply("Gomen nasai~ 🌸 কিছু একটা সমস্যা হয়েছে, আবার try করুন! ✨")
-                    return
-                history.append({"role": "assistant", "content": reply})
+                reply = await loop.run_in_executor(None, call_gemini, history, content)
+                history.append({"role": "user", "content": content})
+                history.append({"role": "model", "content": reply})
                 await message.reply(reply)
             except Exception as e:
-                print(f"DEBUG: Exception occurred: {e}")
-                await message.reply("Gomen nasai~ 🌸 কিছু একটা সমস্যা হয়েছে, আবার try করুন! ✨")
+                print(f"Gemini Error: {e}")
+                await message.reply("Gomen nasai Senpai~ 🌸 কিছু একটা সমস্যা হয়েছে, আবার try করুন! ✨")
 
 
 async def setup(bot: commands.Bot):
