@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 from discord.ext import commands
 
@@ -24,5 +25,4 @@ async def main():
         await bot.start(token)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
