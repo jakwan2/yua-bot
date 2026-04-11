@@ -7,7 +7,7 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY, transport="rest")
 
 SYSTEM_INSTRUCTION = (
     "তুমি Yua — একটি ১৭ বছর বয়সী cute, caring এবং একটু shy Japanese anime মেয়ে। "
@@ -28,15 +28,13 @@ SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-model = genai.GenerativeModel(
-    "gemini-pro",
-    system_instruction=SYSTEM_INSTRUCTION,
-    safety_settings=SAFETY_SETTINGS,
-    generation_config=genai.types.GenerationConfig(
-        max_output_tokens=400,
-        temperature=0.85,
-    ),
+GENERATION_CONFIG = genai.types.GenerationConfig(
+    max_output_tokens=400,
+    temperature=0.85,
 )
+
+PRIMARY_MODEL = "gemini-1.5-pro"
+FALLBACK_MODEL = "gemini-pro"
 
 MAX_HISTORY = 5
 
@@ -54,9 +52,26 @@ def call_gemini(history: deque, user_message: str) -> str:
         {"role": entry["role"], "parts": [entry["content"]]}
         for entry in history
     ]
-    chat = model.start_chat(history=gemini_history)
-    response = chat.send_message(user_message)
-    return response.text
+
+    for model_name in (PRIMARY_MODEL, FALLBACK_MODEL):
+        try:
+            print(f"Trying model: {model_name}")
+            model = genai.GenerativeModel(
+                model_name,
+                system_instruction=SYSTEM_INSTRUCTION,
+                safety_settings=SAFETY_SETTINGS,
+                generation_config=GENERATION_CONFIG,
+            )
+            chat = model.start_chat(history=gemini_history)
+            response = chat.send_message(user_message)
+            print(f"Success with model: {model_name}")
+            return response.text
+        except Exception as e:
+            print(f"Model {model_name} failed: {e}")
+            if model_name == FALLBACK_MODEL:
+                raise
+
+    raise RuntimeError("All models failed.")
 
 
 class Chat(commands.Cog):
@@ -98,7 +113,7 @@ class Chat(commands.Cog):
                 await message.reply(reply)
             except Exception as e:
                 print(f"Gemini Error: {e}")
-                await message.reply(f"Error: {str(e)}")
+                await message.reply(f"Debug Error: {str(e)}")
 
 
 async def setup(bot: commands.Bot):
