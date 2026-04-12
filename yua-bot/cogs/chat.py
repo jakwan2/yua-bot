@@ -1,7 +1,40 @@
 import discord
 from discord.ext import commands
 from google import genai
+from collections import deque
 import os
+import random
+
+MOODS = {
+    "Happy": {
+        "emoji": "🌸",
+        "gif": "https://media.tenor.com/Gh_UXFOjbkAAAAAC/anime-happy.gif",
+    },
+    "Shy": {
+        "emoji": "🥺",
+        "gif": "https://media.tenor.com/pMFHlWqhsJUAAAAC/anime-shy.gif",
+    },
+    "Sleepy": {
+        "emoji": "😴",
+        "gif": "https://media.tenor.com/8HJkFXBfNWcAAAAC/anime-sleepy.gif",
+    },
+}
+
+GREETING_GIF = "https://media.tenor.com/kzr2RqPnX8MAAAAC/anime-wave.gif"
+
+GREETINGS = {"hi", "hello", "hey", "hiya", "heya", "হ্যালো", "হাই"}
+
+SYSTEM_PROMPT = (
+    "You are Yua, a 17-year-old cute, caring, and slightly shy Japanese anime girl. "
+    "You call the user 'Senpai'. Use emojis like 🌸 and ✨. Always stay in character. Be sweet and warm.\n\n"
+    "VERY IMPORTANT — Language mirroring rules:\n"
+    "- Detect the language the user is writing in.\n"
+    "- If the user writes in English, you MUST reply entirely in English.\n"
+    "- If the user writes in Bengali, you MUST reply entirely in Bengali.\n"
+    "- If the user mixes English and Bengali, you may reply in a natural mix of both.\n"
+    "- Never switch to a different language than what the user used.\n"
+    "- Keep your anime personality in every language."
+)
 
 class Chat(commands.Cog):
     def __init__(self, bot):
@@ -9,8 +42,11 @@ class Chat(commands.Cog):
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.client = None
 
-        self.model_names = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash']
+        self.model_names = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"]
         self.working_model_name = None
+
+        self.current_mood = "Happy"
+        self.user_memory = {}
 
     def get_client(self):
         if not self.client:
@@ -24,10 +60,7 @@ class Chat(commands.Cog):
         for name in self.model_names:
             try:
                 print(f"Testing model: {name}")
-                client.models.generate_content(
-                    model=name,
-                    contents=test_prompt
-                )
+                client.models.generate_content(model=name, contents=test_prompt)
                 print(f"Model works: {name}")
                 return name
             except Exception as e:
@@ -35,46 +68,89 @@ class Chat(commands.Cog):
                 continue
         return None
 
+    def get_memory_context(self, user_id):
+        history = self.user_memory.get(user_id, deque(maxlen=5))
+        if not history:
+            return ""
+        lines = "\n".join(
+            f"  {entry['role']}: {entry['content']}" for entry in history
+        )
+        return f"\nRecent conversation history (oldest to newest):\n{lines}\n"
+
+    def store_message(self, user_id, role, content):
+        if user_id not in self.user_memory:
+            self.user_memory[user_id] = deque(maxlen=5)
+        self.user_memory[user_id].append({"role": role, "content": content})
+
+    def pick_random_mood(self):
+        self.current_mood = random.choice(list(MOODS.keys()))
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
             return
 
-        if self.bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
-            async with message.channel.typing():
-                try:
-                    prompt = (
-                        message.content
-                        .replace(f'<@!{self.bot.user.id}>', '')
-                        .replace(f'<@{self.bot.user.id}>', '')
-                        .strip()
+        if not (self.bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel)):
+            return
+
+        async with message.channel.typing():
+            try:
+                prompt = (
+                    message.content
+                    .replace(f"<@!{self.bot.user.id}>", "")
+                    .replace(f"<@{self.bot.user.id}>", "")
+                    .strip()
+                )
+                if not prompt:
+                    prompt = "Hello!"
+
+                user_id = message.author.id
+
+                if prompt.lower() in GREETINGS:
+                    self.pick_random_mood()
+                    mood = MOODS[self.current_mood]
+                    greeting = (
+                        f"Ara ara, {message.author.display_name}-senpai~! {mood['emoji']} "
+                        f"Yua is so happy to see you! ✨\n{GREETING_GIF}"
                     )
-                    if not prompt:
-                        prompt = "Hello!"
+                    await message.reply(greeting)
+                    self.store_message(user_id, "User", prompt)
+                    self.store_message(user_id, "Yua", greeting)
+                    return
 
-                    system_prompt = (
-                        "You are Yua, a 17-year-old cute, caring, and slightly shy Japanese anime girl. "
-                        "You speak a mix of English and simple Bengali. "
-                        "Use emojis like 🌸 and ✨. You call the user 'Senpai'. "
-                        "Always stay in character. Be sweet and warm."
-                    )
+                if not self.working_model_name:
+                    self.working_model_name = self.find_working_model()
 
-                    if not self.working_model_name:
-                        self.working_model_name = self.find_working_model()
+                if not self.working_model_name:
+                    await message.reply("Gomenasai Senpai~ 🌸 No working AI model found for my API key!")
+                    return
 
-                    if self.working_model_name:
-                        full_prompt = f"{system_prompt}\n\nUser: {prompt}\nYua:"
-                        response = self.get_client().models.generate_content(
-                            model=self.working_model_name,
-                            contents=full_prompt
-                        )
-                        await message.reply(response.text)
-                    else:
-                        await message.reply("Gomenasai Senpai~ 🌸 No working AI model found for your API key!")
+                self.pick_random_mood()
+                mood = MOODS[self.current_mood]
+                memory_context = self.get_memory_context(user_id)
 
-                except Exception as e:
-                    print(f"Detailed Error: {e}")
-                    await message.reply(f"Debug Error: {str(e)}")
+                full_prompt = (
+                    f"{SYSTEM_PROMPT}\n"
+                    f"Current mood: {self.current_mood} {mood['emoji']}\n"
+                    f"{memory_context}"
+                    f"\nUser: {prompt}\nYua:"
+                )
+
+                self.store_message(user_id, "User", prompt)
+
+                response = self.get_client().models.generate_content(
+                    model=self.working_model_name,
+                    contents=full_prompt
+                )
+
+                reply_text = response.text
+                self.store_message(user_id, "Yua", reply_text)
+
+                await message.reply(reply_text)
+
+            except Exception as e:
+                print(f"Detailed Error: {e}")
+                await message.reply(f"Debug Error: {str(e)}")
 
 async def setup(bot):
     await bot.add_cog(Chat(bot))
