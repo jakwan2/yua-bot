@@ -2,8 +2,10 @@ import discord
 from discord.ext import commands
 from google import genai
 from collections import deque
+import itertools
 import os
 import random
+import time
 
 MOODS = {
     "Happy": {
@@ -24,6 +26,8 @@ GREETING_GIF = "https://media.tenor.com/kzr2RqPnX8MAAAAC/anime-wave.gif"
 
 GREETINGS = {"hi", "hello", "hey", "hiya", "heya", "হ্যালো", "হাই"}
 
+COOLDOWN_SECONDS = 5
+
 def build_system_prompt(user_name: str) -> str:
     return (
         f"You are Yua, a 17-year-old cute, caring, and slightly shy Japanese anime girl. "
@@ -42,37 +46,83 @@ def build_system_prompt(user_name: str) -> str:
         f"- Simply reply to what the user said, in their language, with your warm anime personality."
     )
 
+
 class Chat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        self.client = None
+
+        raw_keys = [
+            os.getenv("GEMINI_API_KEY"),
+            os.getenv("GEMINI_API_KEY_2"),
+        ]
+        self.api_keys = [k for k in raw_keys if k]
+
+        if not self.api_keys:
+            raise ValueError("No Gemini API keys found. Set GEMINI_API_KEY in Secrets.")
+
+        self.clients = {key: genai.Client(api_key=key) for key in self.api_keys}
+        self.key_cycle = itertools.cycle(self.api_keys)
+        self.current_key = next(self.key_cycle)
+
+        print(f"Loaded {len(self.api_keys)} Gemini API key(s).")
 
         self.model_names = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"]
         self.working_model_name = None
 
         self.current_mood = "Happy"
         self.user_memory = {}
+        self.user_cooldowns = {}
+        self.cooldown_warned = set()
 
-    def get_client(self):
-        if not self.client:
-            if not self.api_key:
-                raise ValueError("GEMINI_API_KEY environment variable is not set.")
-            self.client = genai.Client(api_key=self.api_key)
-        return self.client
+    def get_current_client(self):
+        return self.clients[self.current_key]
+
+    def rotate_key(self):
+        self.current_key = next(self.key_cycle)
+        print(f"Rotated to next API key (ends in ...{self.current_key[-6:]})")
 
     def find_working_model(self, test_prompt="hi"):
-        client = self.get_client()
         for name in self.model_names:
-            try:
-                print(f"Testing model: {name}")
-                client.models.generate_content(model=name, contents=test_prompt)
-                print(f"Model works: {name}")
-                return name
-            except Exception as e:
-                print(f"Model {name} failed: {e}")
-                continue
+            for _ in range(len(self.api_keys)):
+                try:
+                    print(f"Testing model: {name} with key ...{self.current_key[-6:]}")
+                    self.get_current_client().models.generate_content(
+                        model=name, contents=test_prompt
+                    )
+                    print(f"Model works: {name}")
+                    return name
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                        print(f"429 on model test, rotating key...")
+                        self.rotate_key()
+                    else:
+                        print(f"Model {name} failed: {e}")
+                        break
         return None
+
+    def generate_with_failover(self, prompt: str) -> str:
+        last_error = None
+        for _ in range(len(self.api_keys)):
+            try:
+                response = self.get_current_client().models.generate_content(
+                    model=self.working_model_name,
+                    contents=prompt
+                )
+                try:
+                    text = response.text
+                except Exception:
+                    text = None
+                return text or ""
+            except Exception as e:
+                err = str(e)
+                last_error = err
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    print(f"429 hit, rotating API key...")
+                    self.rotate_key()
+                else:
+                    raise
+        raise Exception(f"All API keys exhausted. Last error: {last_error}")
 
     def get_memory_context(self, user_id):
         history = self.user_memory.get(user_id, deque(maxlen=5))
@@ -91,6 +141,13 @@ class Chat(commands.Cog):
     def pick_random_mood(self):
         self.current_mood = random.choice(list(MOODS.keys()))
 
+    def is_on_cooldown(self, user_id) -> bool:
+        last = self.user_cooldowns.get(user_id, 0)
+        return (time.monotonic() - last) < COOLDOWN_SECONDS
+
+    def update_cooldown(self, user_id):
+        self.user_cooldowns[user_id] = time.monotonic()
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
@@ -100,6 +157,19 @@ class Chat(commands.Cog):
             return
 
         user_name = message.author.display_name
+        user_id = message.author.id
+
+        if self.is_on_cooldown(user_id):
+            if user_id not in self.cooldown_warned:
+                self.cooldown_warned.add(user_id)
+                await message.reply(
+                    f"Ektu thamo, {user_name}! 🌸 Eto druto kotha bolle ami lojja pai..."
+                )
+            return
+
+        self.update_cooldown(user_id)
+        self.cooldown_warned.discard(user_id)
+
         async with message.channel.typing():
             try:
                 prompt = (
@@ -110,8 +180,6 @@ class Chat(commands.Cog):
                 )
                 if not prompt:
                     prompt = "Hello!"
-
-                user_id = message.author.id
 
                 if prompt.lower() in GREETINGS:
                     self.pick_random_mood()
@@ -129,7 +197,9 @@ class Chat(commands.Cog):
                     self.working_model_name = self.find_working_model()
 
                 if not self.working_model_name:
-                    await message.reply(f"Gomenasai, {user_name}~ 🌸 No working AI model found for my API key!")
+                    await message.reply(
+                        f"Gomenasai, {user_name}~ 🌸 No working AI model found for my API keys!"
+                    )
                     return
 
                 self.pick_random_mood()
@@ -145,15 +215,7 @@ class Chat(commands.Cog):
 
                 self.store_message(user_id, "User", prompt)
 
-                response = self.get_client().models.generate_content(
-                    model=self.working_model_name,
-                    contents=full_prompt
-                )
-
-                try:
-                    reply_text = response.text
-                except Exception:
-                    reply_text = None
+                reply_text = self.generate_with_failover(full_prompt)
 
                 if not reply_text or not reply_text.strip():
                     reply_text = f"Hmm... {mood['emoji']} Yua is thinking, {user_name}~ Please try again!"
@@ -165,9 +227,12 @@ class Chat(commands.Cog):
                 print(f"Detailed Error: {e}")
                 safe_error = str(e)[:200] if str(e) else "unknown error"
                 try:
-                    await message.reply(f"Gomenasai, {user_name}~ 🌸 Something went wrong! ({safe_error})")
+                    await message.reply(
+                        f"Gomenasai, {user_name}~ 🌸 Something went wrong! ({safe_error})"
+                    )
                 except Exception:
                     pass
+
 
 async def setup(bot):
     await bot.add_cog(Chat(bot))
