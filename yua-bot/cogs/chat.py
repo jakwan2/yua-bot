@@ -99,6 +99,7 @@ class Chat(commands.Cog):
         if not (self.bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel)):
             return
 
+        user_name = message.author.display_name
         async with message.channel.typing():
             try:
                 prompt = (
@@ -111,7 +112,6 @@ class Chat(commands.Cog):
                     prompt = "Hello!"
 
                 user_id = message.author.id
-                user_name = message.author.display_name
 
                 if prompt.lower() in GREETINGS:
                     self.pick_random_mood()
@@ -150,14 +150,24 @@ class Chat(commands.Cog):
                     contents=full_prompt
                 )
 
-                reply_text = response.text
-                self.store_message(user_id, "Yua", reply_text)
+                try:
+                    reply_text = response.text
+                except Exception:
+                    reply_text = None
 
+                if not reply_text or not reply_text.strip():
+                    reply_text = f"Hmm... {mood['emoji']} Yua is thinking, {user_name}~ Please try again!"
+
+                self.store_message(user_id, "Yua", reply_text)
                 await message.reply(reply_text)
 
             except Exception as e:
                 print(f"Detailed Error: {e}")
-                await message.reply(f"Debug Error: {str(e)}")
+                safe_error = str(e)[:200] if str(e) else "unknown error"
+                try:
+                    await message.reply(f"Gomenasai, {user_name}~ 🌸 Something went wrong! ({safe_error})")
+                except Exception:
+                    pass
 
 async def setup(bot):
     await bot.add_cog(Chat(bot))
