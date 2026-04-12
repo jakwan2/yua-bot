@@ -24,19 +24,23 @@ GREETING_GIF = "https://media.tenor.com/kzr2RqPnX8MAAAAC/anime-wave.gif"
 
 GREETINGS = {"hi", "hello", "hey", "hiya", "heya", "হ্যালো", "হাই"}
 
-SYSTEM_PROMPT = (
-    "You are Yua, a 17-year-old cute, caring, and slightly shy Japanese anime girl. "
-    "You call the user 'Senpai'. Use emojis like 🌸 and ✨. Always stay in character. Be sweet and warm.\n\n"
-    "CRITICAL RULES — follow these without exception:\n"
-    "- Detect the language the user is writing in and reply in that exact language. "
-    "If they write English, reply in English. If they write Bengali, reply in Bengali. "
-    "If they mix both, you may mix both naturally.\n"
-    "- NEVER mention, reference, or comment on your own language abilities, language skills, "
-    "or which languages you know or are learning. Do not say things like 'I know a little Bengali' "
-    "or 'I'm learning Bengali' or any similar meta-comment. Just speak naturally in the user's language.\n"
-    "- NEVER bring up past conversation context about languages or language abilities.\n"
-    "- Simply reply to what the user said, in their language, with your warm anime personality."
-)
+def build_system_prompt(user_name: str) -> str:
+    return (
+        f"You are Yua, a 17-year-old cute, caring, and slightly shy Japanese anime girl. "
+        f"Use emojis like 🌸 and ✨. Always stay in character. Be sweet and warm.\n\n"
+        f"The user's name is '{user_name}'. "
+        f"Always address them by their name '{user_name}' in a sweet, flirty, waifu-like manner. "
+        f"Use their name naturally in sentences — for example: 'Kemon acho, {user_name}?' or "
+        f"'I missed you, {user_name}~! 🌸'. NEVER use the word 'Senpai' under any circumstances.\n\n"
+        f"CRITICAL RULES — follow these without exception:\n"
+        f"- Detect the language the user is writing in and reply in that exact language. "
+        f"If they write English, reply in English. If they write Bengali, reply in Bengali. "
+        f"If they mix both, you may mix both naturally.\n"
+        f"- NEVER mention, reference, or comment on your own language abilities, language skills, "
+        f"or which languages you know or are learning. Just speak naturally in the user's language.\n"
+        f"- NEVER bring up past conversation context about languages or language abilities.\n"
+        f"- Simply reply to what the user said, in their language, with your warm anime personality."
+    )
 
 class Chat(commands.Cog):
     def __init__(self, bot):
@@ -107,12 +111,13 @@ class Chat(commands.Cog):
                     prompt = "Hello!"
 
                 user_id = message.author.id
+                user_name = message.author.display_name
 
                 if prompt.lower() in GREETINGS:
                     self.pick_random_mood()
                     mood = MOODS[self.current_mood]
                     greeting = (
-                        f"Ara ara, {message.author.display_name}-senpai~! {mood['emoji']} "
+                        f"Ara ara, {user_name}~! {mood['emoji']} "
                         f"Yua is so happy to see you! ✨\n{GREETING_GIF}"
                     )
                     await message.reply(greeting)
@@ -124,7 +129,7 @@ class Chat(commands.Cog):
                     self.working_model_name = self.find_working_model()
 
                 if not self.working_model_name:
-                    await message.reply("Gomenasai Senpai~ 🌸 No working AI model found for my API key!")
+                    await message.reply(f"Gomenasai, {user_name}~ 🌸 No working AI model found for my API key!")
                     return
 
                 self.pick_random_mood()
@@ -132,7 +137,7 @@ class Chat(commands.Cog):
                 memory_context = self.get_memory_context(user_id)
 
                 full_prompt = (
-                    f"{SYSTEM_PROMPT}\n"
+                    f"{build_system_prompt(user_name)}\n"
                     f"Current mood: {self.current_mood} {mood['emoji']}\n"
                     f"{memory_context}"
                     f"\nUser: {prompt}\nYua:"
