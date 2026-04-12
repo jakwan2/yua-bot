@@ -1,32 +1,39 @@
 import discord
 from discord.ext import commands
-import google.generativeai as genai
+from google import genai
 import os
 
 class Chat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        api_key = os.getenv("GEMINI_API_KEY")
-        genai.configure(api_key=api_key, transport='rest')
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        self.client = None
 
-        # Models your API key actually supports (checked via list_models)
         self.model_names = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash']
-        self.model = None
         self.working_model_name = None
 
+    def get_client(self):
+        if not self.client:
+            if not self.api_key:
+                raise ValueError("GEMINI_API_KEY environment variable is not set.")
+            self.client = genai.Client(api_key=self.api_key)
+        return self.client
+
     def find_working_model(self, test_prompt="hi"):
-        # Actually calls generate_content to confirm the model works
+        client = self.get_client()
         for name in self.model_names:
             try:
                 print(f"Testing model: {name}")
-                m = genai.GenerativeModel(name)
-                m.generate_content(test_prompt)
+                client.models.generate_content(
+                    model=name,
+                    contents=test_prompt
+                )
                 print(f"Model works: {name}")
-                return m, name
+                return name
             except Exception as e:
                 print(f"Model {name} failed: {e}")
                 continue
-        return None, None
+        return None
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -52,13 +59,15 @@ class Chat(commands.Cog):
                         "Always stay in character. Be sweet and warm."
                     )
 
-                    # Initialize and verify model on first use
-                    if not self.model:
-                        self.model, self.working_model_name = self.find_working_model()
+                    if not self.working_model_name:
+                        self.working_model_name = self.find_working_model()
 
-                    if self.model:
+                    if self.working_model_name:
                         full_prompt = f"{system_prompt}\n\nUser: {prompt}\nYua:"
-                        response = self.model.generate_content(full_prompt)
+                        response = self.get_client().models.generate_content(
+                            model=self.working_model_name,
+                            contents=full_prompt
+                        )
                         await message.reply(response.text)
                     else:
                         await message.reply("Gomenasai Senpai~ 🌸 No working AI model found for your API key!")
